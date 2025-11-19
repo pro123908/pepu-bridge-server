@@ -9,7 +9,7 @@ export class AppService {
     return 'Hello World!';
   }
 
-  getPending() {
+  async getPending() {
     return this.contractService.getPendingTxs();
   }
 }

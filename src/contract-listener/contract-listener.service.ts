@@ -10,6 +10,10 @@ import { ConfigService } from '@nestjs/config';
 
 import L1_ABI from '../abi/L1_ABI.json';
 import L2_ABI from '../abi/L2_ABI.json';
+import {
+  TransactionCacheService,
+  PendingTransaction,
+} from '../cache/transaction-cache.service';
 
 @Injectable()
 export class ContractListenerService implements OnModuleInit, OnModuleDestroy {
@@ -20,38 +24,30 @@ export class ContractListenerService implements OnModuleInit, OnModuleDestroy {
   private l1Contract: ethers.Contract;
   private l2Contract: ethers.Contract;
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    private readonly txCache: TransactionCacheService,
+  ) {}
 
   /* --------------------------
       PENDING TRANSACTION LIST
   ---------------------------*/
-  private pendingTxs: {
-    id: string;
-    chain: string;
-    type: string;
-    user: string;
-    amount?: string;
-    token?: string;
-    txHash?: string;
-    status: 'PENDING' | 'CONFIRMED' | 'FAILED';
-    timestamp: number;
-  }[] = [];
 
-  addPendingTx(tx: any) {
-    this.pendingTxs.push(tx);
+  async addPendingTx(tx: PendingTransaction): Promise<void> {
+    await this.txCache.addPendingTx(tx);
     this.logger.log(`🟡 Pending TX Added: ${tx.type}`);
   }
 
-  updateTxStatus(hash: string, status: 'CONFIRMED' | 'FAILED') {
-    const tx = this.pendingTxs.find((t) => t.txHash === hash);
-    if (tx) {
-      tx.status = status;
-      this.logger.log(`🟢 TX Updated: ${hash} → ${status}`);
-    }
+  async updateTxStatus(
+    hash: string,
+    status: 'CONFIRMED' | 'FAILED',
+  ): Promise<void> {
+    await this.txCache.updateTxStatusByHash(hash, status);
+    this.logger.log(`🟢 TX Updated: ${hash} → ${status}`);
   }
 
-  getPendingTxs() {
-    return this.pendingTxs;
+  async getPendingTxs(): Promise<PendingTransaction[]> {
+    return this.txCache.getAllPendingTxs();
   }
 
   private readonly L1_RPC_URL =
@@ -262,18 +258,21 @@ export class ContractListenerService implements OnModuleInit, OnModuleDestroy {
         );
 
       // Add pending tx for frontend
-      this.addPendingTx({
+      await this.addPendingTx({
         id: Date.now().toString(),
         chain: 'L2',
         type: 'L2_executeBuy',
         user,
-        txHash: buy.hash,
+        txHash: buy.hash as string,
         status: 'PENDING',
         timestamp: Date.now(),
+        amount: amount.toString(),
+        token: l2TargetToken,
       });
       console.log('L2 Buy Tx:', buy.hash);
+      this.logger.log(`L2 Buy Tx: ${buy.hash}`);
       await buy.wait();
-      this.updateTxStatus(buy.hash, 'CONFIRMED');
+      await this.updateTxStatus(buy.hash as string, 'CONFIRMED');
     } catch (err: any) {
       if (err?.error?.message?.includes('already known')) {
         console.warn(
@@ -396,19 +395,20 @@ export class ContractListenerService implements OnModuleInit, OnModuleDestroy {
         );
 
       // Add pending tx
-      this.addPendingTx({
+      await this.addPendingTx({
         id: Date.now().toString(),
         chain: 'L1',
         type: 'L1_WITHDRAW',
         user,
-        txHash: withdrawTx.hash,
+        txHash: withdrawTx.hash as string,
         status: 'PENDING',
         timestamp: Date.now(),
       });
 
       await withdrawTx.wait();
       console.log('L1 Withdraw Tx:', withdrawTx.hash);
-      this.updateTxStatus(withdrawTx.hash, 'CONFIRMED');
+      this.logger.log(`L1 Withdraw Tx: ${withdrawTx.hash}`);
+      await this.updateTxStatus(withdrawTx.hash as string, 'CONFIRMED');
     } catch (err: any) {
       if (err?.error?.message?.includes('already known')) {
         console.warn(

@@ -3,16 +3,17 @@ import { ConfigModule } from '@nestjs/config';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { ContractListenerModule } from './contract-listener/contract-listener.module';
-import { ContractListenerService } from './contract-listener/contract-listener.service';
+import { CacheModule } from './cache/cache.module';
 
 @Module({
   imports: [
+    CacheModule,
+    ContractListenerModule,
     ConfigModule.forRoot({
       isGlobal: true,
     }),
-    ContractListenerModule,
   ],
   controllers: [AppController],
-  providers: [AppService, ContractListenerService],
+  providers: [AppService],
 })
 export class AppModule {}

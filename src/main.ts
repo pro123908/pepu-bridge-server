@@ -7,6 +7,7 @@ async function bootstrap() {
     origin: '*',
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
     credentials: false,
+    allowedHeaders: '*',
   }); // Allows ALL origins, methods, headers
   await app.listen(process.env.PORT ?? 3000);
 }

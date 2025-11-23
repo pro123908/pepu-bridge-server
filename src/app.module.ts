@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { MongooseModule } from '@nestjs/mongoose';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { ContractListenerModule } from './contract-listener/contract-listener.module';
@@ -7,11 +8,12 @@ import { CacheModule } from './cache/cache.module';
 
 @Module({
   imports: [
-    CacheModule,
-    ContractListenerModule,
     ConfigModule.forRoot({
       isGlobal: true,
     }),
+    MongooseModule.forRoot(process.env.MONGODB_URI!),
+    CacheModule,
+    ContractListenerModule,
   ],
   controllers: [AppController],
   providers: [AppService],

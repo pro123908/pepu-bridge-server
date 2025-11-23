@@ -1,9 +1,14 @@
 import { Module } from '@nestjs/common';
-import { CacheModule as NestCacheModule } from '@nestjs/cache-manager';
+import { MongooseModule } from '@nestjs/mongoose';
 import { TransactionCacheService } from './transaction-cache.service';
+import { Transaction, TransactionSchema } from './transaction.schema';
 
 @Module({
-  imports: [NestCacheModule.register()],
+  imports: [
+    MongooseModule.forFeature([
+      { name: Transaction.name, schema: TransactionSchema },
+    ]),
+  ],
   providers: [TransactionCacheService],
   exports: [TransactionCacheService],
 })

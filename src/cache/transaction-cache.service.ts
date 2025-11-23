@@ -1,93 +1,151 @@
-import { Injectable, Inject } from '@nestjs/common';
-import { CACHE_MANAGER, Cache } from '@nestjs/cache-manager';
+import { Injectable } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { Transaction, TransactionDocument } from './transaction.schema';
 
 export interface PendingTransaction {
   id: string;
-  chain: string;
-  type: string;
+  chain: string; // 'L1' | 'L2'
+  type: string; // 'BUY' | 'SELL'
   user: string;
   amount?: string;
-  token?: string;
-  txHash?: string;
+  l1Token?: string; // Token address on L1
+  l2Token?: string; // Token address on L2
+  eventHash?: string; // Original event transaction hash
+  txHash?: string; // Relayer execution transaction hash
   status: 'PENDING' | 'CONFIRMED' | 'FAILED';
   timestamp: number;
 }
 
 @Injectable()
 export class TransactionCacheService {
-  private readonly PENDING_TXS_KEY = 'pending-transactions';
-  private readonly TX_PREFIX = 'tx:';
-
-  constructor(@Inject(CACHE_MANAGER) private cacheManager: Cache) {}
+  constructor(
+    @InjectModel(Transaction.name)
+    private transactionModel: Model<TransactionDocument>,
+  ) {}
 
   /**
-   * Add a pending transaction to the cache
+   * Add a pending transaction to the database
    */
   async addPendingTx(tx: PendingTransaction): Promise<void> {
-    const allTxs = await this.getAllPendingTxs();
-    allTxs.push(tx);
-    // Store with 24 hour TTL
-    await this.cacheManager.set(this.PENDING_TXS_KEY, allTxs, 86400000);
+    await this.transactionModel.findOneAndUpdate({ id: tx.id }, tx, {
+      upsert: true,
+      new: true,
+    });
   }
 
   /**
-   * Get all pending transactions
+   * Get all transactions
    */
-  async getAllPendingTxs(): Promise<PendingTransaction[]> {
-    const txs = await this.cacheManager.get<PendingTransaction[]>(
-      this.PENDING_TXS_KEY,
-    );
-    return txs || [];
+  async getAll(): Promise<PendingTransaction[]> {
+    try {
+      const txs = await this.transactionModel
+        .find()
+        .lean()
+        .sort({ createdAt: -1 })
+        .limit(1000); // Limit to recent 1000 to avoid memory issues
+      return txs as PendingTransaction[];
+    } catch (err) {
+      console.error('Error fetching transactions:', err);
+      return [];
+    }
   }
 
   /**
-   * Get a pending transaction by hash
+   * Get a pending transaction by hash (searches both eventHash and txHash)
    */
   async getPendingTxByHash(hash: string): Promise<PendingTransaction | null> {
-    const allTxs = await this.getAllPendingTxs();
-    return allTxs.find((tx) => tx.txHash === hash) || null;
+    try {
+      const result = await this.transactionModel
+        .findOne({
+          $or: [{ eventHash: hash }, { txHash: hash }],
+        })
+        .lean();
+      return result as PendingTransaction | null;
+    } catch (err) {
+      console.error('Error fetching transaction by hash:', err);
+      return null;
+    }
   }
 
   /**
-   * Update transaction status by hash
+   * Check if a transaction hash already exists in database (eventHash or txHash)
+   */
+  async txHashExists(hash: string): Promise<boolean> {
+    try {
+      const result = await this.transactionModel.countDocuments({
+        $or: [{ eventHash: hash }, { txHash: hash }],
+      });
+      return result > 0;
+    } catch (err) {
+      console.error('Error checking if tx hash exists:', err);
+      return false;
+    }
+  }
+
+  /**
+   * Update transaction status by hash (searches both eventHash and txHash)
    */
   async updateTxStatusByHash(
     hash: string,
-    status: 'CONFIRMED' | 'FAILED',
+    status: 'PENDING' | 'CONFIRMED' | 'FAILED',
   ): Promise<boolean> {
-    const allTxs = await this.getAllPendingTxs();
-    const tx = allTxs.find((t) => t.txHash === hash);
-
-    if (tx) {
-      tx.status = status;
-      await this.cacheManager.set(this.PENDING_TXS_KEY, allTxs, 86400000);
-      return true;
+    try {
+      const result = await this.transactionModel.updateOne(
+        {
+          $or: [{ eventHash: hash }, { txHash: hash }],
+        },
+        { $set: { status } },
+      );
+      return result.modifiedCount > 0;
+    } catch (err) {
+      console.error(`Error updating transaction status for hash ${hash}:`, err);
+      return false;
     }
-    return false;
   }
 
   /**
-   * Get all pending transactions for a specific user
+   * Get pending transactions for a specific user (query-based, not in-memory filtering)
    */
   async getUserPendingTxs(userAddress: string): Promise<PendingTransaction[]> {
-    const allTxs = await this.getAllPendingTxs();
-    return allTxs.filter(
-      (tx) => tx.user.toLowerCase() === userAddress.toLowerCase(),
-    );
+    try {
+      const txs = await this.transactionModel
+        .find({
+          user: userAddress.toLowerCase(),
+          status: 'PENDING',
+        })
+        .lean()
+        .sort({ createdAt: -1 });
+      return txs as PendingTransaction[];
+    } catch (err) {
+      console.error(`Error fetching pending txs for user ${userAddress}:`, err);
+      return [];
+    }
   }
 
   /**
-   * Get all pending transactions for a specific chain
+   * Get pending transactions for a specific chain (query-based, not in-memory filtering)
    */
   async getChainPendingTxs(chain: string): Promise<PendingTransaction[]> {
-    const allTxs = await this.getAllPendingTxs();
-    return allTxs.filter((tx) => tx.chain === chain);
+    try {
+      const txs = await this.transactionModel
+        .find({
+          chain,
+          status: 'PENDING',
+        })
+        .lean()
+        .sort({ createdAt: -1 });
+      return txs as PendingTransaction[];
+    } catch (err) {
+      console.error(`Error fetching pending txs for chain ${chain}:`, err);
+      return [];
+    }
   }
 
   /**
    * Clear all pending transactions
    */
   async clearAllPendingTxs(): Promise<void> {
-    await this.cacheManager.del(this.PENDING_TXS_KEY);
+    await this.transactionModel.deleteMany({});
   }
 }

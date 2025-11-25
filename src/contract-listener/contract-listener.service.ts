@@ -7,13 +7,17 @@ import {
 import { ethers } from 'ethers';
 import { ConfigService } from '@nestjs/config';
 
-import L1_ABI from '../abi/L1_ABI.json';
-import L2_ABI from '../abi/L2_ABI.json';
+import L1_ABI from '../abi/L1SwapBridge.json';
+import L2_ABI from '../abi/L2SwapBridge.json';
 import {
   TransactionCacheService,
   PendingTransaction,
 } from '../cache/transaction-cache.service';
-import { signEIP712Bridge, signEIP712BridgeWithdraw } from 'src/utils/indes';
+import {
+  getTokenDecimals,
+  signEIP712Bridge,
+  signEIP712BridgeWithdraw,
+} from 'src/utils/indes';
 
 @Injectable()
 export class ContractListenerService implements OnModuleInit, OnModuleDestroy {
@@ -93,9 +97,9 @@ export class ContractListenerService implements OnModuleInit, OnModuleDestroy {
     process.env.L2_RPC_URL || 'https://base-sepolia-rpc.publicnode.com';
 
   private readonly L1_CONTRACT_ADDRESS =
-    '0x18F1a5F4d9EAFf3C69080CD1105145e464a9640B';
+    '0x6D14e0bAe3dE162B88168Ba720347F88470F793F';
   private readonly L2_CONTRACT_ADDRESS =
-    '0x9b2B02820B0f5837898c24d5885E1Bc74b55F89B';
+    '0xCdA1e65611250455f785b54215659EBCE6827a5D';
 
   onModuleInit() {
     this.startListeners();
@@ -309,11 +313,11 @@ export class ContractListenerService implements OnModuleInit, OnModuleDestroy {
       'AssetsBuy',
       (
         user: string,
-        l2TargetToken: string,
         assetIn: string,
         amountIn: ethers.BigNumberish,
-        nonce: ethers.BigNumberish,
+        l2TargetToken: string,
         deadline: ethers.BigNumberish,
+        nonce: ethers.BigNumberish,
         event: any,
       ) => {
         // Extract tx hash robustly and check for duplicates
@@ -353,11 +357,11 @@ export class ContractListenerService implements OnModuleInit, OnModuleDestroy {
 
             this.executeBuyOnL2(
               user,
-              l2TargetToken,
+              assetIn,
               amountIn,
+              l2TargetToken,
               deadline,
               eventHash,
-              assetIn,
             ).catch((err) => {
               this.logger.error('Error executing buy on L2:', err);
             });
@@ -378,9 +382,11 @@ export class ContractListenerService implements OnModuleInit, OnModuleDestroy {
       'ASSETS_SOLD',
       (
         user: string,
+        tokenToSell: string,
+        amountIn: ethers.BigNumberish,
         targetL1Asset: string,
-        nonce: ethers.BigNumberish,
         deadline: ethers.BigNumberish,
+        nonce: ethers.BigNumberish,
         event: any,
       ) => {
         // Extract tx hash robustly and check for duplicates
@@ -413,12 +419,19 @@ export class ContractListenerService implements OnModuleInit, OnModuleDestroy {
             this.logger.log(`Target L1 Asset: ${targetL1Asset}`);
             this.logger.log(`Nonce: ${nonce.toString()}`);
             this.logger.log(`Deadline: ${deadline.toString()}`);
+            this.logger.log(`Token To Sell: ${tokenToSell}`);
+            this.logger.log(`Amount In: ${amountIn.toString()}`);
 
-            this.withdrawOnL1(user, targetL1Asset, deadline, eventHash).catch(
-              (err) => {
-                this.logger.error('Error executing withdraw on L1:', err);
-              },
-            );
+            this.withdrawOnL1(
+              user,
+              tokenToSell,
+              amountIn,
+              targetL1Asset,
+              deadline,
+              eventHash,
+            ).catch((err) => {
+              this.logger.error('Error executing withdraw on L1:', err);
+            });
           })
           .catch((err) => {
             this.logger.error('Error checking database for L2 event:', err);
@@ -583,11 +596,11 @@ export class ContractListenerService implements OnModuleInit, OnModuleDestroy {
 
   async executeBuyOnL2(
     user: string,
+    assetIn: string,
+    amountIn: ethers.BigNumberish,
     l2TargetToken: string,
-    amount: ethers.BigNumberish,
     deadline: ethers.BigNumberish,
-    eventHash?: string,
-    l1Token?: string,
+    eventHash: string,
   ) {
     try {
       const OWNER_PRIVATE_KEY = this.config.get<string>('OWNER_PRIVATE_KEY');
@@ -604,7 +617,7 @@ export class ContractListenerService implements OnModuleInit, OnModuleDestroy {
       const contract2 = new ethers.Contract(
         this.L2_CONTRACT_ADDRESS,
         L2_ABI,
-        provider,
+        owner,
       );
 
       this.logger.log(`Owner Address: ${owner.address}`);
@@ -616,12 +629,20 @@ export class ContractListenerService implements OnModuleInit, OnModuleDestroy {
       this.logger.log(`Nonce for Execute Buy: ${nonceExeBuy}`);
       // const deadline = Math.floor(Date.now() / 1000) + 3600; // +1 hour
 
+      const assetInDecimals = await getTokenDecimals(assetIn, this.L1_RPC_URL);
+
+      // Convert to human-readable: amount / (10^tokenDecimals)
+      const humanReadable = Number(amountIn) / 10 ** assetInDecimals;
+
+      // Convert to 18 decimals (wei)
+      const etherValue = ethers.parseUnits(humanReadable.toString(), 18);
+
       const l2SignatureBuy = await signEIP712Bridge(
         contract2,
         user,
         l2TargetToken,
         ethers.ZeroAddress, //TODO: Audit Fix needed here
-        amount,
+        etherValue,
         nonceExeBuy,
         deadline,
         owner,
@@ -635,7 +656,7 @@ export class ContractListenerService implements OnModuleInit, OnModuleDestroy {
         .executeBuy(
           user,
           l2TargetToken,
-          amount,
+          etherValue,
           0,
           nonceExeBuy,
           deadline,
@@ -648,11 +669,11 @@ export class ContractListenerService implements OnModuleInit, OnModuleDestroy {
         id: Date.now().toString(),
         chain: 'L2',
         type: 'BUY',
-        user,
-        amount: amount.toString(),
-        l1Token: l1Token || '', // Token from L1 AssetsBuy event
+        user: user,
+        amount: humanReadable.toString(),
+        l1Token: assetIn, // Token from L1 AssetsBuy event
         l2Token: l2TargetToken, // Target token on L2
-        eventHash: eventHash || '', // L1 AssetsBuy event hash
+        eventHash: eventHash, // L1 AssetsBuy event hash
         txHash: buy.hash as string, // L2 executeBuy transaction hash
         status: 'PENDING',
         timestamp: Date.now(),
@@ -676,9 +697,11 @@ export class ContractListenerService implements OnModuleInit, OnModuleDestroy {
 
   async withdrawOnL1(
     user: string,
+    tokenToSell: string,
+    amountIn: ethers.BigNumberish,
     targetL1Asset: string,
     deadline: ethers.BigNumberish,
-    eventHash?: string,
+    eventHash: string,
   ) {
     try {
       const OWNER_PRIVATE_KEY = this.config.get<string>('OWNER_PRIVATE_KEY');
@@ -715,7 +738,17 @@ export class ContractListenerService implements OnModuleInit, OnModuleDestroy {
       let nonce = await contract1.usedNonces(user);
       nonce = Number(nonce) + 1;
       this.logger.log(`Nonce for Withdraw: ${nonce}`);
-      // const deadline = Math.floor(Date.now() / 1000) + 3600; // +1 hour
+
+      const tokenToSellInDecimals = await getTokenDecimals(
+        tokenToSell,
+        this.L2_RPC_URL,
+      );
+
+      // Convert to human-readable: amount / (10^tokenDecimals)
+      const humanReadable = Number(amountIn) / 10 ** tokenToSellInDecimals;
+
+      // Convert to 18 decimals (wei)
+      const etherValue = ethers.parseUnits(humanReadable.toString(), 18);
 
       const withdrawSignature = signEIP712BridgeWithdraw(
         contract1,
@@ -746,10 +779,10 @@ export class ContractListenerService implements OnModuleInit, OnModuleDestroy {
         chain: 'L1',
         type: 'SELL',
         user,
-        amount: userLpShareonL1.toString(),
+        amount: humanReadable.toString(),
         l1Token: targetL1Asset, // L1 withdrawal token
-        l2Token: targetL1Asset, // Asset token from L2 event
-        eventHash: eventHash || '', // L2 ASSETS_SOLD event hash
+        l2Token: tokenToSell, // Asset token from L2 event
+        eventHash: eventHash, // L2 ASSETS_SOLD event hash
         txHash: withdrawTx.hash as string, // L1 withdraw transaction hash
         status: 'PENDING',
         timestamp: Date.now(),

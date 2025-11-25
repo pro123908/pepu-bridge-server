@@ -3,6 +3,9 @@ import { Wallet } from 'ethers';
 import { ethers } from 'ethers';
 import assert from 'assert';
 
+// Minimal ERC-20 ABI for decimals()
+const erc20Abi = ['function decimals() view returns (uint8)'];
+
 export async function signEIP712Bridge(
   bridgeContract: Contract,
   user: string,
@@ -112,4 +115,27 @@ export async function signEIP712BridgeWithdraw(
   );
 
   return signature;
+}
+
+/**
+ * Fetch token decimals from an ERC-20 contract
+ * @param tokenAddress - ERC20 token contract address
+ * @param rpcUrl - RPC URL of the chain
+ * @returns Promise<number> - decimals value
+ */
+export async function getTokenDecimals(
+  tokenAddress: string,
+  rpcUrl: string,
+): Promise<number> {
+  try {
+    const provider = new ethers.JsonRpcProvider(rpcUrl);
+
+    const contract = new ethers.Contract(tokenAddress, erc20Abi, provider);
+
+    const decimals: number = await contract.decimals();
+    return Number(decimals);
+  } catch (error) {
+    console.error('Error fetching token decimals:', error);
+    throw new Error('Failed to fetch token decimals');
+  }
 }
